@@ -86,6 +86,7 @@ struct libcriu_wrapper_s
   int (*criu_set_parent_images) (const char *path);
   void (*criu_set_pid) (int pid);
   int (*criu_set_root) (const char *root);
+  int (*criu_add_cg_root) (const char *ctrl, const char *path);
   void (*criu_set_shell_job) (bool shell_job);
   void (*criu_set_tcp_established) (bool tcp_established);
   void (*criu_set_track_mem) (bool track_mem);
@@ -170,6 +171,7 @@ load_wrapper (struct libcriu_wrapper_s **wrapper_out, libcrun_error_t *err)
   LOAD_CRIU_FUNCTION (criu_set_parent_images, false);
   LOAD_CRIU_FUNCTION (criu_set_pid, false);
   LOAD_CRIU_FUNCTION (criu_set_root, false);
+  LOAD_CRIU_FUNCTION (criu_add_cg_root, false);
   LOAD_CRIU_FUNCTION (criu_set_shell_job, false);
   LOAD_CRIU_FUNCTION (criu_set_tcp_established, false);
   LOAD_CRIU_FUNCTION (criu_set_track_mem, false);
@@ -983,6 +985,27 @@ libcrun_container_restore_linux_criu (libcrun_container_status_t *status, libcru
   libcriu_wrapper->criu_set_tcp_established (cr_options->tcp_established);
   libcriu_wrapper->criu_set_file_locks (cr_options->file_locks);
   libcriu_wrapper->criu_set_orphan_pts_master (true);
+
+  /* Tell CRIU the container's actual cgroup path so it can rewrite the
+     checkpoint image's cgroup entries before restore.  Without this,
+     the restored process's cgroup namespace root points to the OLD
+     cgroup scope from the checkpoint, causing re-checkpoint to fail
+     with -EBADE (cgroup path suffix mismatch in proc_parse.c).  */
+  if (status->cgroup_path && libcriu_wrapper->criu_add_cg_root)
+    {
+      ret = libcriu_wrapper->criu_add_cg_root (NULL, status->cgroup_path);
+      if (UNLIKELY (ret != 0))
+        {
+          ret = crun_make_error (err, 0, "error setting CRIU cgroup root to `%s`", status->cgroup_path);
+          goto out_umount;
+        }
+    }
+
+  if (cr_options->manage_cgroups_mode == -1)
+    /* Defaulting to CRIU_CG_MODE_SOFT just as runc */
+    libcriu_wrapper->criu_set_manage_cgroups_mode (CRIU_CG_MODE_SOFT);
+  else
+    libcriu_wrapper->criu_set_manage_cgroups_mode (cr_options->manage_cgroups_mode);
   libcriu_wrapper->criu_set_manage_cgroups (true);
   libcriu_wrapper->criu_set_network_lock (cr_options->network_lock_method);
 
